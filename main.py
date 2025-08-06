@@ -1,8 +1,11 @@
 import os
-from fastapi import FastAPI
+import shutil
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Dict, Optional
+from uuid import UUID
 
 # Import LangChain components
 from langchain_community.document_loaders import PyPDFLoader
@@ -29,44 +32,95 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- 1. Load Documents and Create Vector Store ---
-# This part runs once when the server starts.
-# Ensure your PDF file exists at ./data/your_document.pdf
-loader = PyPDFLoader("./data/AI.pdf")
-docs = loader.load()
-text_splitter = RecursiveCharacterTextSplitter()
-documents = text_splitter.split_documents(docs)
-embeddings = HuggingFaceEmbeddings()
-vector = FAISS.from_documents(documents, embeddings)
+# --- Global state to store vector stores per session ---
+VECTOR_STORES: Dict[str, FAISS] = {}
+UPLOAD_DIR = "./uploaded_pdfs"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# --- 2. Create the RAG Chain ---
-# Switched to a more reliable model for demonstration.
-llm_endpoint = HuggingFaceEndpoint(repo_id="mistralai/Mistral-7B-Instruct-v0.2", max_new_tokens=512)
-llm = ChatHuggingFace(llm=llm_endpoint)
+# --- RAG Chain creation logic ---
+def get_rag_chain(vector_store: FAISS):
+    """Creates and returns a RAG chain for a given vector store."""
+    llm_endpoint = HuggingFaceEndpoint(
+        repo_id="mistralai/Mistral-7B-Instruct-v0.2",
+        max_new_tokens=512,
+        # Ensure HUGGINGFACEHUB_API_TOKEN is set in your .env file
+        huggingfacehub_api_token=os.getenv("HUGGINGFACEHUB_API_TOKEN")
+    )
+    llm = ChatHuggingFace(llm=llm_endpoint)
 
-prompt = ChatPromptTemplate.from_template("""
-Answer the following question based only on the provided context.
-If the answer is not in the context, say "I cannot answer based on the information provided."
-Context:
-{context}
+    prompt = ChatPromptTemplate.from_template("""
+    Answer the following question based only on the provided context.
+    If the answer is not in the context, say "I cannot answer based on the information provided."
+    Context:
+    {context}
 
-Question: {input}
-""")
+    Question: {input}
+    """)
 
-document_chain = create_stuff_documents_chain(llm, prompt)
-retriever = vector.as_retriever()
-retrieval_chain = create_retrieval_chain(retriever, document_chain)
+    document_chain = create_stuff_documents_chain(llm, prompt)
+    retriever = vector_store.as_retriever()
+    retrieval_chain = create_retrieval_chain(retriever, document_chain)
+    return retrieval_chain
 
-# --- 3. Define the Chat API Endpoint ---
-class ChatRequest(BaseModel):
-    query: str
-
-@app.post("/chat")
-def chat_endpoint(request: ChatRequest):
-    response = retrieval_chain.invoke({"input": request.query})
-    return {"response": response["answer"]}
-
-# Add the welcome endpoint back
+# --- Endpoints ---
 @app.get("/")
 def read_root():
-    return {"message": "Assistant Chatbot API is running! Use /chat to interact."}
+    return {"message": "Dynamic PDF Chatbot API is running! Use /upload-pdf and /chat to interact."}
+
+@app.post("/upload-pdf/")
+async def upload_pdf(file: UploadFile = File(...), session_id: str = Form(...)):
+    """Handles PDF file upload and processes it to create a vector store."""
+    try:
+        if file.content_type != "application/pdf":
+            raise HTTPException(status_code=400, detail="Invalid file type. Only PDFs are allowed.")
+
+        # Save the uploaded file temporarily
+        file_path = os.path.join(UPLOAD_DIR, file.filename)
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        # Process the document to create the vector store
+        loader = PyPDFLoader(file_path)
+        docs = loader.load()
+        text_splitter = RecursiveCharacterTextSplitter()
+        documents = text_splitter.split_documents(docs)
+        
+        embeddings = HuggingFaceEmbeddings()
+        vector_store = FAISS.from_documents(documents, embeddings)
+
+        # Store the vector store in our global dictionary, keyed by session_id
+        VECTOR_STORES[session_id] = vector_store
+        
+        return {"message": "PDF processed successfully!", "session_id": session_id}
+
+    except Exception as e:
+        print(f"Error during file upload: {e}")
+        raise HTTPException(status_code=500, detail=f"An error occurred during processing: {e}")
+    finally:
+        # Clean up the temporary file
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
+# --- Chat Request Model ---
+class ChatRequest(BaseModel):
+    user_query: str
+    session_id: str
+
+@app.post("/chat/")
+async def chat_endpoint(request: ChatRequest):
+    """Answers user queries based on the session's document."""
+    session_id = request.session_id
+    user_query = request.user_query
+    
+    if session_id not in VECTOR_STORES:
+        raise HTTPException(status_code=404, detail="No document uploaded for this session.")
+        
+    vector_store = VECTOR_STORES[session_id]
+    retrieval_chain = get_rag_chain(vector_store)
+    
+    try:
+        response = retrieval_chain.invoke({"input": user_query})
+        return {"response": response["answer"]}
+    except Exception as e:
+        print(f"Error during chat: {e}")
+        raise HTTPException(status_code=500, detail="An error occurred while processing the chat request.")

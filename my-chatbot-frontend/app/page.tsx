@@ -1,4 +1,4 @@
-"use client";
+'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
@@ -44,7 +44,8 @@ function App() {
     formData.append('session_id', sessionId);
 
     try {
-      const response = await axios.post('/api/upload-pdf/', formData, {
+      // --- CHANGE: Updated URL to point to your FastAPI backend ---
+      const response = await axios.post('http://localhost:8000/upload-pdf/', formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
@@ -71,8 +72,9 @@ function App() {
     setLoading(true);
 
     try {
+      // --- CHANGE: Updated URL to point to your FastAPI backend ---
       const response = await axios.post(
-        '/api/chat/',
+        'http://localhost:8000/chat/',
         {
           user_query: input,
           session_id: sessionId,
