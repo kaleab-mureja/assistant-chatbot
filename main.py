@@ -6,9 +6,8 @@ from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict
-from uuid import uuid4
 
-# Import LangChain components from the updated packages
+# Import LangChain components
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -16,8 +15,9 @@ from langchain_community.vectorstores import FAISS
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
-from langchain_core.messages import AIMessage, HumanMessage
+
+# Import Gemini-specific components
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 # Load environment variables
 load_dotenv()
@@ -68,19 +68,16 @@ load_sessions()
 # --- RAG Chain creation logic ---
 def get_rag_chain(vector_store: FAISS):
     """Creates and returns a RAG chain for a given vector store."""
-    hf_token = os.getenv("HUGGINGFACEHUB_API_TOKEN")
-    if not hf_token:
-        raise ValueError("HuggingFace API token not found in environment variables")
-
-    # Use ChatHuggingFace with a properly configured HuggingFaceEndpoint
-    llm_endpoint = HuggingFaceEndpoint(
-        repo_id="mistralai/Mistral-7B-Instruct-v0.2",
-        huggingfacehub_api_token=hf_token,
-        task="conversational",  # This is the key fix
+    google_api_key = os.getenv("GOOGLE_API_KEY")
+    if not google_api_key:
+        raise ValueError("Google API key not found in environment variables")
+    
+    # Use ChatGoogleGenerativeAI for the LLM
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-pro",
         temperature=0.1,
-        max_new_tokens=512
+        google_api_key=google_api_key
     )
-    llm = ChatHuggingFace(llm=llm_endpoint)
 
     prompt = ChatPromptTemplate.from_template("""
     You are a helpful AI assistant. Answer the user's question based on the provided context and conversation history.
@@ -167,7 +164,6 @@ async def upload_pdf(file: UploadFile = File(...), session_id: str = Form(...)):
         raise HTTPException(status_code=500, detail=f"An error occurred during processing: {str(e)}")
     finally:
         if 'file_path' in locals() and os.path.exists(file_path):
-            # Do not delete the file to allow for reloading, but consider a cleanup strategy later.
             pass
 
 # --- Chat Request Model ---
@@ -221,8 +217,8 @@ async def chat_endpoint(request: ChatRequest):
         return {"response": response["answer"]}
 
     except ValueError as e:
-        if "HuggingFace API token" in str(e):
-            raise HTTPException(status_code=401, detail="Invalid HuggingFace API credentials")
+        if "Google API key" in str(e):
+            raise HTTPException(status_code=401, detail="Invalid Google API credentials")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         print(f"Error during chat: {str(e)}")
