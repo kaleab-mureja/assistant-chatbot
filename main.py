@@ -8,15 +8,16 @@ from pydantic import BaseModel
 from typing import Dict
 from uuid import uuid4
 
-# Import LangChain components
+# Import LangChain components from the updated packages
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_community.llms import HuggingFaceHub
+from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
+from langchain_core.messages import AIMessage, HumanMessage
 
 # Load environment variables
 load_dotenv()
@@ -33,7 +34,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Global state to store vector stores and memory per session ---
+# --- Global state for sessions ---
 VECTOR_STORES: Dict[str, FAISS] = {}
 SESSION_MEMORY: Dict[str, Dict] = {} # Stores history and metadata
 DB_FILE = "db.json"
@@ -67,24 +68,26 @@ load_sessions()
 # --- RAG Chain creation logic ---
 def get_rag_chain(vector_store: FAISS):
     """Creates and returns a RAG chain for a given vector store."""
-    # Verify HuggingFace token is available
     hf_token = os.getenv("HUGGINGFACEHUB_API_TOKEN")
     if not hf_token:
         raise ValueError("HuggingFace API token not found in environment variables")
-    
-    llm = HuggingFaceHub(
+
+    # Use ChatHuggingFace with a properly configured HuggingFaceEndpoint
+    llm_endpoint = HuggingFaceEndpoint(
         repo_id="mistralai/Mistral-7B-Instruct-v0.2",
         huggingfacehub_api_token=hf_token,
-        model_kwargs={
-            "temperature": 0.1,
-            "max_new_tokens": 512,
-            "max_length": 4096  # Adjust based on model limits
-        }
+        task="conversational",  # This is the key fix
+        temperature=0.1,
+        max_new_tokens=512
     )
+    llm = ChatHuggingFace(llm=llm_endpoint)
 
     prompt = ChatPromptTemplate.from_template("""
-    You are a helpful AI assistant. Answer the user's question based on the provided context.
+    You are a helpful AI assistant. Answer the user's question based on the provided context and conversation history.
     If you don't know the answer, just say that you don't know, don't try to make up an answer.
+
+    Conversation History:
+    {chat_history}
 
     Context:
     {context}
@@ -95,7 +98,7 @@ def get_rag_chain(vector_store: FAISS):
     """)
 
     document_chain = create_stuff_documents_chain(llm, prompt)
-    retriever = vector_store.as_retriever(search_kwargs={"k": 3})  # Return top 3 relevant chunks
+    retriever = vector_store.as_retriever(search_kwargs={"k": 3})
     retrieval_chain = create_retrieval_chain(retriever, document_chain)
     return retrieval_chain
 
@@ -107,7 +110,7 @@ def read_root():
 @app.get("/sessions/")
 def get_sessions():
     """Returns a list of all existing sessions."""
-    return [{"session_id": sid, "history": session_data.get("history", []), "title": session_data.get("title", "New Chat")} 
+    return [{"session_id": sid, "history": session_data.get("history", []), "title": session_data.get("title", "New Chat")}
             for sid, session_data in SESSION_MEMORY.items()]
 
 @app.delete("/sessions/{session_id}")
@@ -141,7 +144,7 @@ async def upload_pdf(file: UploadFile = File(...), session_id: str = Form(...)):
             chunk_overlap=200
         )
         documents = text_splitter.split_documents(docs)
-        
+
         # Create embeddings and vector store
         embeddings = HuggingFaceEmbeddings(
             model_name="sentence-transformers/all-MiniLM-L6-v2"
@@ -156,16 +159,16 @@ async def upload_pdf(file: UploadFile = File(...), session_id: str = Form(...)):
             "uploaded_file": file.filename
         }
         save_sessions()
-        
+
         return {"message": "PDF processed successfully!", "session_id": session_id}
 
     except Exception as e:
         print(f"Error during file upload: {str(e)}")
         raise HTTPException(status_code=500, detail=f"An error occurred during processing: {str(e)}")
     finally:
-        # Clean up the temporary file
         if 'file_path' in locals() and os.path.exists(file_path):
-            os.remove(file_path)
+            # Do not delete the file to allow for reloading, but consider a cleanup strategy later.
+            pass
 
 # --- Chat Request Model ---
 class ChatRequest(BaseModel):
@@ -177,20 +180,21 @@ async def chat_endpoint(request: ChatRequest):
     """Answers user queries based on the session's document."""
     session_id = request.session_id
     user_query = request.user_query
-    
-    # Check if session exists
+
     if session_id not in SESSION_MEMORY:
         raise HTTPException(status_code=404, detail="Session not found.")
-    
-    # Check if vector store exists
+
     if session_id not in VECTOR_STORES:
         session_data = SESSION_MEMORY.get(session_id)
         if not session_data or not session_data.get("uploaded_file"):
             raise HTTPException(status_code=400, detail="No document uploaded for this session.")
-        
+
         # Try to reload the vector store
         try:
             file_path = os.path.join(UPLOAD_DIR, session_data["uploaded_file"])
+            if not os.path.exists(file_path):
+                raise FileNotFoundError(f"File {file_path} not found.")
+
             loader = PyPDFLoader(file_path)
             docs = loader.load()
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
@@ -199,29 +203,23 @@ async def chat_endpoint(request: ChatRequest):
             VECTOR_STORES[session_id] = FAISS.from_documents(documents, embeddings)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to reload document: {str(e)}")
-    
+
     try:
-        # Get the RAG chain
         retrieval_chain = get_rag_chain(VECTOR_STORES[session_id])
-        
-        # Include chat history in context
         chat_history = "\n".join(SESSION_MEMORY[session_id].get("history", []))
-        
-        # Invoke the chain
         response = retrieval_chain.invoke({
             "input": user_query,
             "chat_history": chat_history
         })
-        
-        # Update session history
+
         SESSION_MEMORY[session_id]["history"].extend([
             f"Human: {user_query}",
             f"AI: {response['answer']}"
         ])
         save_sessions()
-        
+
         return {"response": response["answer"]}
-        
+
     except ValueError as e:
         if "HuggingFace API token" in str(e):
             raise HTTPException(status_code=401, detail="Invalid HuggingFace API credentials")
