@@ -1,0 +1,12 @@
+# Virtual environment
+venv/
+
+# Python cache files
+__pycache__/
+*.pyc
+
+# Large files that don't need to be tracked
+*.pdf
+
+# Any secret keys or API keys
+test_api_key.py
