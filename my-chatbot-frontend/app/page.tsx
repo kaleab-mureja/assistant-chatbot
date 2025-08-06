@@ -13,16 +13,20 @@ function App() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
-  const BASE_URL = 'http://127.0.0.1:8000';
-
   useEffect(() => {
     setSessionId(uuidv4());
   }, []);
 
+  useEffect(() => {
+    if (chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages]);
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      setFile(e.target.files[0]);
-      setFileName(e.target.files[0].name);
+      setFile(e.target.files?.[0] || null);
+      setFileName(e.target.files?.[0]?.name || '');
     } else {
       setFile(null);
       setFileName('');
@@ -40,140 +44,150 @@ function App() {
     formData.append('session_id', sessionId);
 
     try {
-      await axios.post(`${BASE_URL}/upload-pdf/`, formData, {
+      const response = await axios.post('/api/upload-pdf/', formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
       });
+
+      console.log('File upload successful:', response.data);
+      setLoading(false);
       setMessages([
-        { text: 'PDF processed successfully. You can now ask questions about the document.', sender: 'ai' },
+        { text: 'PDF processed successfully! You can now ask questions about the document.', sender: 'ai' },
       ]);
     } catch (error) {
-      console.error('Error uploading file:', error);
-      setMessages([{ text: 'Error processing PDF. Please try again.', sender: 'ai' }]);
-    } finally {
+      console.error('File upload failed:', error);
       setLoading(false);
+      setMessages([{ text: 'Failed to process PDF. Please try again.', sender: 'ai' }]);
     }
   };
 
-  const handleSendMessage = async () => {
-    if (!input.trim() || loading || !sessionId) return;
+  const handleChat = async () => {
+    if (!input.trim() || !sessionId) return;
 
-    const userMessage = { text: input, sender: 'user' as 'user' };
-    setMessages((prevMessages) => [...prevMessages, userMessage]);
+    const userMessage = { text: input, sender: 'user' as const };
+    setMessages((prev) => [...prev, userMessage]);
     setInput('');
     setLoading(true);
 
     try {
-      const response = await axios.post(`${BASE_URL}/chat/`, {
-        session_id: sessionId,
-        user_query: input,
-      });
-      const aiMessage = { text: response.data.ai_message, sender: 'ai' as 'ai' };
-      setMessages((prevMessages) => [...prevMessages, aiMessage]);
-    } catch (error: any) {
-      console.error('Error sending message:', error);
-      if (error.response && error.response.data && error.response.data.detail) {
-        setMessages((prevMessages) => [...prevMessages, { text: error.response.data.detail, sender: 'ai' }]);
-      } else {
-        setMessages((prevMessages) => [...prevMessages, { text: 'Sorry, something went wrong. Please try again later.', sender: 'ai' }]);
-      }
+      const response = await axios.post(
+        '/api/chat/',
+        {
+          user_query: input,
+          session_id: sessionId,
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      const aiMessage = { text: response.data.response, sender: 'ai' as const };
+      setMessages((prev) => [...prev, aiMessage]);
+    } catch (error) {
+      console.error('Chat failed:', error);
+      const errorMessage = { text: 'Sorry, something went wrong. Please try again.', sender: 'ai' as const };
+      setMessages((prev) => [...prev, errorMessage]);
     } finally {
       setLoading(false);
     }
   };
 
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
 
   return (
-    <div className="bg-gray-100 min-h-screen flex items-center justify-center p-4">
-      <div className="w-full max-w-4xl bg-white shadow-lg rounded-md flex flex-col h-[90vh]">
-        
-        {/* Header */}
-        <div className="bg-blue-700 text-white p-5 rounded-t-md text-center shadow-md">
-          <h1 className="text-3xl font-bold tracking-tight">Assistant Chatbot</h1>
-        </div>
+    <div className="flex flex-col h-screen bg-gray-100">
+      <header className="bg-white shadow-sm p-4 flex items-center justify-center">
+        <h1 className="text-2xl font-bold text-gray-800">PDF Chat Assistant</h1>
+      </header>
 
-        {/* Chat window */}
-        <div className="flex-1 p-6 overflow-y-auto space-y-4">
-          {messages.map((msg, index) => (
-            <div
-              key={index}
-              className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
-            >
+      <main className="flex-1 flex justify-center p-6 overflow-hidden">
+        <div className="flex flex-col w-full max-w-3xl bg-white rounded-xl shadow-lg">
+          <div className="flex-1 overflow-y-auto p-6 space-y-6">
+            {messages.map((msg, index) => (
               <div
-                className={`max-w-xl p-4 rounded-lg shadow-md ${
-                  msg.sender === 'user'
-                    ? 'bg-blue-500 text-white'
-                    : 'bg-gray-200 text-gray-800'
-                }`}
+                key={index}
+                className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
               >
-                {msg.text}
+                <div
+                  className={`max-w-md p-4 rounded-3xl ${
+                    msg.sender === 'user'
+                      ? 'bg-blue-500 text-white'
+                      : 'bg-gray-200 text-gray-800'
+                  }`}
+                >
+                  {msg.text}
+                </div>
               </div>
-            </div>
-          ))}
-          <div ref={chatEndRef} />
-        </div>
+            ))}
+            {loading && (
+              <div className="flex justify-start">
+                <div className="max-w-md p-4 rounded-3xl bg-gray-200 text-gray-800 animate-pulse">
+                  Typing...
+                </div>
+              </div>
+            )}
+            <div ref={chatEndRef} />
+          </div>
 
-        {/* User input area */}
-        <div className="p-5 border-t border-gray-200 bg-gray-50 rounded-b-md shadow-md">
-          <div className="flex flex-col space-y-4">
-            <div className="flex flex-row items-center space-x-3">
-              <label
-                htmlFor="file-upload"
-                className="cursor-pointer px-4 py-2 border border-blue-600 text-blue-600 rounded-md hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 text-sm font-semibold transition duration-200 ease-in-out"
-              >
-                Choose File
+          <div className="p-6 bg-white border-t border-gray-200">
+            {fileName && (
+              <div className="flex justify-between items-center mb-2 px-4 py-2 bg-gray-100 rounded-xl">
+                <p className="text-sm text-gray-700">File: {fileName}</p>
+                <button
+                  onClick={() => { setFile(null); setFileName(''); }}
+                  className="text-gray-500 hover:text-gray-800 transition-colors"
+                >
+                  &times;
+                </button>
+              </div>
+            )}
+            <div className="flex items-center space-x-2">
+              <label className="cursor-pointer bg-gray-100 text-gray-600 p-3 rounded-full hover:bg-gray-200 transition-colors">
+                <input
+                  type="file"
+                  accept=".pdf"
+                  onChange={handleFileChange}
+                  className="hidden"
+                />
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                </svg>
               </label>
-              <input
-                id="file-upload"
-                type="file"
-                className="sr-only"
-                onChange={handleFileChange}
-                disabled={loading}
-              />
-              {fileName && (
-                <span className="bg-gray-100 text-gray-700 text-sm rounded-md px-2 py-1">
-                  {fileName}
-                </span>
-              )}
+
               <button
                 onClick={handleFileUpload}
-                className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 disabled:opacity-50 text-sm font-semibold transition duration-200 ease-in-out"
                 disabled={!file || loading}
+                className="bg-green-600 text-white font-bold p-3 rounded-full disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
               >
-                Upload
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
               </button>
-            </div>
 
-            <div className="flex space-x-3">
               <input
                 type="text"
-                className="flex-1 p-3 bg-gray-100 border border-gray-400 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-600 text-gray-800 transition duration-200 ease-in-out"
-                placeholder="Ask me a question about the document..."
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                onKeyPress={(e) => {
-                  if (e.key === 'Enter' && !loading) {
-                    handleSendMessage();
-                  }
-                }}
+                onKeyDown={(e) => e.key === 'Enter' && handleChat()}
+                placeholder="Message PDF Chat Assistant..."
+                className="flex-1 border border-gray-300 p-3 rounded-full focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-800"
                 disabled={loading}
               />
               <button
-                onClick={handleSendMessage}
-                className="px-6 py-3 bg-blue-700 text-white rounded-md hover:bg-blue-800 disabled:opacity-50 text-sm font-semibold transition duration-200 ease-in-out"
-                disabled={loading || input.trim() === ''}
+                onClick={handleChat}
+                disabled={!input.trim() || loading || !fileName}
+                className="bg-blue-600 text-white p-3 rounded-full disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
               >
-                {loading ? 'Sending...' : 'Send'}
+                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                </svg>
               </button>
             </div>
           </div>
-          {!sessionId && <p className="text-red-500 text-sm mt-2">Initializing session...</p>}
         </div>
-      </div>
+      </main>
     </div>
   );
 }

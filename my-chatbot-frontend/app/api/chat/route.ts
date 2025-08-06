@@ -1,19 +1,19 @@
 // app/api/chat/route.ts
+
 import { NextResponse } from 'next/server';
 
 const PYTHON_BACKEND_URL = process.env.PYTHON_BACKEND_URL || 'http://localhost:8000';
 
 export async function POST(req: Request) {
   try {
-    const { query, session_id } = await req.json();
+    const { user_query, session_id } = await req.json();
 
     const pythonResponse = await fetch(`${PYTHON_BACKEND_URL}/chat/`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      // Corrected line: 'query' is now 'user_query'
-      body: JSON.stringify({ user_query: query, session_id }),
+      body: JSON.stringify({ user_query, session_id }),
     });
 
     if (!pythonResponse.ok) {

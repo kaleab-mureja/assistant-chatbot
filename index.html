@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF Chat Assistant</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f3f4f6;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        .chat-container {
+            width: 100%;
+            max-width: 600px;
+            height: 80vh;
+            background-color: #fff;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .header {
+            padding: 16px;
+            border-bottom: 1px solid #e5e7eb;
+            text-align: center;
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #1f2937;
+        }
+        .messages {
+            flex: 1;
+            padding: 24px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .message {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 18px;
+            line-height: 1.4;
+        }
+        .user-message {
+            align-self: flex-end;
+            background-color: #3b82f6;
+            color: #fff;
+            border-bottom-right-radius: 4px;
+        }
+        .ai-message {
+            align-self: flex-start;
+            background-color: #e5e7eb;
+            color: #1f2937;
+            border-bottom-left-radius: 4px;
+        }
+        .input-area {
+            padding: 16px;
+            border-top: 1px solid #e5e7eb;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .input-area input[type="file"] {
+            display: none;
+        }
+        .input-area label {
+            cursor: pointer;
+            background-color: #f3f4f6;
+            color: #4b5563;
+            padding: 12px;
+            border-radius: 9999px;
+        }
+        .input-area button {
+            cursor: pointer;
+            border: none;
+            padding: 12px;
+            border-radius: 9999px;
+            color: white;
+            transition: background-color 0.2s;
+        }
+        .input-area button:disabled {
+            background-color: #d1d5db;
+            cursor: not-allowed;
+        }
+        .input-area input[type="text"] {
+            flex: 1;
+            border: 1px solid #d1d5db;
+            border-radius: 9999px;
+            padding: 12px 16px;
+            font-size: 1rem;
+            outline: none;
+        }
+        .input-area input[type="text"]:focus {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5);
+        }
+        .filename-display {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 16px;
+            background-color: #f3f4f6;
+            border-radius: 12px;
+            margin-bottom: 8px;
+        }
+    </style>
+</head>
+<body>
+
+<div class="chat-container">
+    <div class="header">
+        PDF Chat Assistant
+    </div>
+    <div class="messages" id="messages">
+        <div class="ai-message message">Hello! Please upload a PDF to get started.</div>
+    </div>
+    <div class="input-area">
+        <label for="file-upload">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path>
+            </svg>
+        </label>
+        <input type="file" id="file-upload" accept=".pdf">
+        <div id="file-name-container" style="flex-grow: 1;"></div>
+        <button id="upload-button" style="background-color: #10b981;">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M5 13l4 4L19 7"></path>
+            </svg>
+        </button>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/uuid@8.3.2/dist/umd/uuidv4.min.js"></script>
+<script>
+    const messagesDiv = document.getElementById('messages');
+    const fileInput = document.getElementById('file-upload');
+    const uploadButton = document.getElementById('upload-button');
+    const inputArea = document.querySelector('.input-area');
+    const fileNameContainer = document.getElementById('file-name-container');
+
+    const BACKEND_URL = 'http://localhost:8000';
+    let sessionId = uuidv4();
+    let pdfProcessed = false;
+
+    // Helper function to append messages
+    function appendMessage(text, sender) {
+        const messageDiv = document.createElement('div');
+        messageDiv.classList.add('message', `${sender}-message`);
+        messageDiv.textContent = text;
+        messagesDiv.appendChild(messageDiv);
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+
+    // Function to handle file selection
+    fileInput.addEventListener('change', (event) => {
+        const file = event.target.files[0];
+        if (file) {
+            fileNameContainer.innerHTML = `
+                <div class="filename-display">
+                    <span>File: ${file.name}</span>
+                    <button id="clear-file-btn" style="background: none; color: #6b7280; font-weight: bold;">&times;</button>
+                </div>
+            `;
+            document.getElementById('clear-file-btn').addEventListener('click', () => {
+                fileInput.value = '';
+                fileNameContainer.innerHTML = '';
+            });
+            uploadButton.disabled = false;
+        } else {
+            fileNameContainer.innerHTML = '';
+            uploadButton.disabled = true;
+        }
+    });
+
+    // Function to handle file upload
+    uploadButton.addEventListener('click', async () => {
+        const file = fileInput.files[0];
+        if (!file) return;
+
+        appendMessage('Uploading and processing PDF...', 'ai');
+        uploadButton.disabled = true;
+
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('session_id', sessionId);
+
+        try {
+            const response = await fetch(`${BACKEND_URL}/upload-pdf/`, {
+                method: 'POST',
+                body: formData,
+            });
+
+            if (response.ok) {
+                appendMessage('PDF processed successfully! You can now ask questions about the document.', 'ai');
+                pdfProcessed = true;
+                // Dynamically change input area to chat mode
+                inputArea.innerHTML = `
+                    <input type="text" id="chat-input" placeholder="Message PDF Chat Assistant...">
+                    <button id="send-button" style="background-color: #3b82f6;">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
+                        </svg>
+                    </button>
+                `;
+                
+                const chatInput = document.getElementById('chat-input');
+                const sendButton = document.getElementById('send-button');
+
+                sendButton.addEventListener('click', handleChat);
+                chatInput.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') handleChat();
+                });
+            } else {
+                const errorData = await response.json();
+                appendMessage(`Failed to process PDF. Error: ${errorData.detail || 'Unknown error.'}`, 'ai');
+                uploadButton.disabled = false;
+            }
+        } catch (error) {
+            console.error('File upload failed:', error);
+            appendMessage('Failed to process PDF. Please try again.', 'ai');
+            uploadButton.disabled = false;
+        }
+    });
+
+    // Function to handle chat
+    async function handleChat() {
+        const chatInput = document.getElementById('chat-input');
+        const sendButton = document.getElementById('send-button');
+        const userQuery = chatInput.value.trim();
+
+        if (!userQuery || !pdfProcessed) return;
+
+        appendMessage(userQuery, 'user');
+        chatInput.value = '';
+        sendButton.disabled = true;
+
+        try {
+            const response = await fetch(`${BACKEND_URL}/chat/`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ user_query: userQuery, session_id: sessionId }),
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                appendMessage(data.response, 'ai');
+            } else {
+                const errorData = await response.json();
+                appendMessage(`Sorry, something went wrong. Error: ${errorData.detail || 'Unknown error.'}`, 'ai');
+            }
+        } catch (error) {
+            console.error('Chat failed:', error);
+            appendMessage('Sorry, something went wrong. Please try again.', 'ai');
+        } finally {
+            sendButton.disabled = false;
+        }
+    }
+</script>
+
+</body>
+</html>
