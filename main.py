@@ -16,6 +16,7 @@ from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_huggingface import HuggingFaceEndpoint, ChatHuggingFace
+from langchain.memory import ConversationBufferMemory
 
 # Load environment variables
 load_dotenv()
@@ -32,14 +33,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Global state to store vector stores per session ---
+# --- Global state to store vector stores and memory per session ---
 VECTOR_STORES: Dict[str, FAISS] = {}
+SESSION_MEMORY: Dict[str, ConversationBufferMemory] = {}
 UPLOAD_DIR = "./uploaded_pdfs"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # --- RAG Chain creation logic ---
-def get_rag_chain(vector_store: FAISS):
-    """Creates and returns a RAG chain for a given vector store."""
+def get_rag_chain(vector_store: FAISS, memory: ConversationBufferMemory):
+    """Creates and returns a RAG chain for a given vector store and memory."""
     llm_endpoint = HuggingFaceEndpoint(
         repo_id="mistralai/Mistral-7B-Instruct-v0.2",
         max_new_tokens=512,
@@ -49,8 +51,12 @@ def get_rag_chain(vector_store: FAISS):
     llm = ChatHuggingFace(llm=llm_endpoint)
 
     prompt = ChatPromptTemplate.from_template("""
-    Answer the following question based only on the provided context.
+    You are a helpful AI assistant. Answer the user's question based on the provided context and conversation history.
     If the answer is not in the context, say "I cannot answer based on the information provided."
+
+    Conversation History:
+    {chat_history}
+
     Context:
     {context}
 
@@ -88,8 +94,9 @@ async def upload_pdf(file: UploadFile = File(...), session_id: str = Form(...)):
         embeddings = HuggingFaceEmbeddings()
         vector_store = FAISS.from_documents(documents, embeddings)
 
-        # Store the vector store in our global dictionary, keyed by session_id
+        # Store the vector store and initialize new memory for the session
         VECTOR_STORES[session_id] = vector_store
+        SESSION_MEMORY[session_id] = ConversationBufferMemory()
         
         return {"message": "PDF processed successfully!", "session_id": session_id}
 
@@ -108,7 +115,7 @@ class ChatRequest(BaseModel):
 
 @app.post("/chat/")
 async def chat_endpoint(request: ChatRequest):
-    """Answers user queries based on the session's document."""
+    """Answers user queries based on the session's document and conversation history."""
     session_id = request.session_id
     user_query = request.user_query
     
@@ -116,10 +123,20 @@ async def chat_endpoint(request: ChatRequest):
         raise HTTPException(status_code=404, detail="No document uploaded for this session.")
         
     vector_store = VECTOR_STORES[session_id]
-    retrieval_chain = get_rag_chain(vector_store)
+    memory = SESSION_MEMORY[session_id]
+    
+    # Get the chat history from the memory
+    chat_history = memory.load_memory_variables({})["history"]
+    
+    # Pass the history to the RAG chain
+    retrieval_chain = get_rag_chain(vector_store, memory)
     
     try:
-        response = retrieval_chain.invoke({"input": user_query})
+        response = retrieval_chain.invoke({"input": user_query, "chat_history": chat_history})
+        
+        # Update memory with the new interaction
+        memory.save_context({"input": user_query}, {"output": response["answer"]})
+        
         return {"response": response["answer"]}
     except Exception as e:
         print(f"Error during chat: {e}")
